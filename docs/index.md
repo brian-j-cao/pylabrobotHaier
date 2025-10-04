@@ -26,6 +26,32 @@ PyHamilton is a Windows only interface to Hamilton's VENUS.
 ```
 <hr>
 
+## Supported by
+
+```{image} /img/supported_by/logo_inheco.png
+:alt: Inheco
+:class: company
+:target: https://www.inheco.com/
+```
+
+```{image} /img/supported_by/logo_tek-matic.png
+:alt: Tek-Matic
+:class: company
+:target: https://www.tekmatic.com
+```
+
+```{image} /img/supported_by/logo_westportal.jpg
+:alt: West Portal Scientific
+:class: company
+:target: https://www.westportalsci.com
+```
+
+```{image} /img/supported_by/logo_byonoy.svg
+:alt: Byonoy
+:class: company
+:target: https://byonoy.com
+```
+
 ## Used by
 
 ```{image} /img/used_by/logo_mit.jpg

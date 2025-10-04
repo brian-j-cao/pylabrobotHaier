@@ -149,7 +149,7 @@ core96_errors = {
   82: "TADM measurement out of lower limit curve",
   83: "TADM measurement out of upper limit curve",
   84: "Not enough memory for TADM measurement",
-  90: "Limit curve not resetable",
+  90: "Limit curve not resettable",
   91: "Limit curve not programmable",
   92: "Limit curve name not found",
   93: "Limit curve data incorrect",
@@ -186,7 +186,7 @@ pip_errors = {
   56: "Y drive not initialized",
   57: "Y drive movement error",
   58: "Y drive position out of permitted area",
-  59: "Divergance Y motion controller to linear encoder to heigh",
+  59: "Divergance Y motion controller to linear encoder to height",
   60: "Z drive initialization failed",
   61: "Z drive not initialized",
   62: "Z drive movement error",
@@ -212,7 +212,7 @@ pip_errors = {
   84: "Not enough memory for TADM measurement",
   85: "Jet dispense pressure not reached",
   86: "ADC algorithm error",
-  90: "Limit curve not resetable",
+  90: "Limit curve not resettable",
   91: "Limit curve not programmable",
   92: "Limit curve name not found",
   93: "Limit curve data incorrect",
@@ -622,6 +622,12 @@ class VantageBackend(HamiltonLiquidHandler):
         determined automatically based on the tip and liquid used.
     """
 
+    if mix_volume is not None or mix_cycles is not None or mix_speed is not None:
+      raise NotImplementedError(
+        "Mixing through backend kwargs is deprecated. Use the `mix` parameter of LiquidHandler.dispense instead. "
+        "https://docs.pylabrobot.org/user_guide/00_liquid-handling/mixing.html"
+      )
+
     x_positions, y_positions, channels_involved = self._ops_to_fw_positions(ops, use_channels)
 
     if jet is None:
@@ -730,12 +736,12 @@ class VantageBackend(HamiltonLiquidHandler):
       ],
       swap_speed=[round(ss * 10) for ss in swap_speed or [2] * len(ops)],
       settling_time=[round(st * 10) for st in settling_time or [1] * len(ops)],
-      mix_volume=[round(mv * 100) for mv in mix_volume or [0] * len(ops)],
-      mix_cycles=mix_cycles or [0] * len(ops),
+      mix_volume=[round(op.mix.volume * 100) if op.mix is not None else 0 for op in ops],
+      mix_cycles=[op.mix.repetitions if op.mix is not None else 0 for op in ops],
       mix_position_in_z_direction_from_liquid_surface=[
         round(mp) for mp in mix_position_in_z_direction_from_liquid_surface or [0] * len(ops)
       ],
-      mix_speed=[round(ms * 10) for ms in mix_speed or [250] * len(ops)],
+      mix_speed=[round(op.mix.flow_rate * 10) if op.mix is not None else 2500 for op in ops],
       surface_following_distance_during_mixing=[
         round(sfdm * 10) for sfdm in surface_following_distance_during_mixing or [0] * len(ops)
       ],
@@ -807,6 +813,12 @@ class VantageBackend(HamiltonLiquidHandler):
         Truly empty the tip, not available in the VENUS liquid editor, but is in the firmware
         documentation. Dispense mode 4.
     """
+
+    if mix_volume is not None or mix_cycles is not None or mix_speed is not None:
+      raise NotImplementedError(
+        "Mixing through backend kwargs is deprecated. Use the `mix` parameter of LiquidHandler.dispense instead. "
+        "https://docs.pylabrobot.org/user_guide/00_liquid-handling/mixing.html"
+      )
 
     x_positions, y_positions, channels_involved = self._ops_to_fw_positions(ops, use_channels)
 
@@ -922,12 +934,12 @@ class VantageBackend(HamiltonLiquidHandler):
       pressure_lld_sensitivity=pressure_lld_sensitivity or [1] * len(ops),
       swap_speed=[round(ss * 10) for ss in swap_speed or [1] * len(ops)],
       settling_time=[round(st * 10) for st in settling_time or [0] * len(ops)],
-      mix_volume=[round(mv * 100) for mv in mix_volume or [0] * len(ops)],
-      mix_cycles=mix_cycles or [0] * len(ops),
+      mix_volume=[round(op.mix.volume * 100) if op.mix is not None else 0 for op in ops],
+      mix_cycles=[op.mix.repetitions if op.mix is not None else 0 for op in ops],
       mix_position_in_z_direction_from_liquid_surface=[
         round(mp) for mp in mix_position_in_z_direction_from_liquid_surface or [0] * len(ops)
       ],
-      mix_speed=[round(ms * 10) for ms in mix_speed or [1] * len(ops)],
+      mix_speed=[round(op.mix.flow_rate * 100) if op.mix is not None else 10 for op in ops],
       surface_following_distance_during_mixing=[
         round(sfdm * 10) for sfdm in surface_following_distance_during_mixing or [0] * len(ops)
       ],
@@ -1028,7 +1040,7 @@ class VantageBackend(HamiltonLiquidHandler):
     mix_cycles: int = 0,
     mix_position_in_z_direction_from_liquid_surface: float = 0,
     surface_following_distance_during_mixing: float = 0,
-    mix_speed: float = 2,
+    mix_speed: float = 0,
     limit_curve_index: int = 0,
     tadm_channel_pattern: Optional[List[bool]] = None,
     tadm_algorithm_on_off: int = 0,
@@ -1045,6 +1057,12 @@ class VantageBackend(HamiltonLiquidHandler):
         determined automatically based on the tip and liquid used in the first well.
     """
     # assert self.core96_head_installed, "96 head must be installed"
+
+    if mix_volume != 0 or mix_cycles != 0 or mix_speed != 0:
+      raise NotImplementedError(
+        "Mixing through backend kwargs is deprecated. Use the `mix` parameter of LiquidHandler.dispense96 instead. "
+        "https://docs.pylabrobot.org/user_guide/00_liquid-handling/mixing.html"
+      )
 
     if isinstance(aspiration, MultiHeadAspirationPlate):
       plate = aspiration.wells[0].parent
@@ -1082,7 +1100,7 @@ class VantageBackend(HamiltonLiquidHandler):
 
     liquid_height = position.z + (aspiration.liquid_height or 0)
 
-    tip = aspiration.tips[0]
+    tip = next(tip for tip in aspiration.tips if tip is not None)
     liquid_to_be_aspirated = Liquid.WATER  # default to water
     if len(aspiration.liquids[0]) > 0 and aspiration.liquids[0][-1][0] is not None:
       # first part of tuple in last liquid of first well
@@ -1141,15 +1159,15 @@ class VantageBackend(HamiltonLiquidHandler):
       lld_sensitivity=lld_sensitivity,
       swap_speed=round(swap_speed * 10),
       settling_time=round(settling_time * 10),
-      mix_volume=round(mix_volume * 100),
-      mix_cycles=mix_cycles,
+      mix_volume=round(aspiration.mix.volume * 100) if aspiration.mix is not None else 0,
+      mix_cycles=aspiration.mix.repetitions if aspiration.mix is not None else 0,
       mix_position_in_z_direction_from_liquid_surface=round(
         mix_position_in_z_direction_from_liquid_surface * 100
       ),
       surface_following_distance_during_mixing=round(
         surface_following_distance_during_mixing * 100
       ),
-      mix_speed=round(mix_speed * 10),
+      mix_speed=round(aspiration.mix.flow_rate * 10) if aspiration.mix is not None else 20,
       limit_curve_index=limit_curve_index,
       tadm_channel_pattern=tadm_channel_pattern,
       tadm_algorithm_on_off=tadm_algorithm_on_off,
@@ -1205,6 +1223,12 @@ class VantageBackend(HamiltonLiquidHandler):
         determined based on the jet, blow_out, and empty parameters.
     """
 
+    if mix_volume != 0 or mix_cycles != 0 or mix_speed is not None:
+      raise NotImplementedError(
+        "Mixing through backend kwargs is deprecated. Use the `mix` parameter of LiquidHandler.dispense96 instead. "
+        "https://docs.pylabrobot.org/user_guide/00_liquid-handling/mixing.html"
+      )
+
     if isinstance(dispense, MultiHeadDispensePlate):
       plate = dispense.wells[0].parent
       assert isinstance(plate, Plate), "MultiHeadDispensePlate well parent must be a Plate"
@@ -1241,7 +1265,7 @@ class VantageBackend(HamiltonLiquidHandler):
 
     liquid_height = position.z + (dispense.liquid_height or 0) + 10
 
-    tip = dispense.tips[0]
+    tip = next(tip for tip in dispense.tips if tip is not None)
     liquid_to_be_dispensed = Liquid.WATER  # default to WATER
     if len(dispense.liquids[0]) > 0 and dispense.liquids[0][-1][0] is not None:
       # first part of tuple in last liquid of first well
@@ -1267,7 +1291,6 @@ class VantageBackend(HamiltonLiquidHandler):
     flow_rate = dispense.flow_rate or (hlc.dispense_flow_rate if hlc is not None else 250)
     swap_speed = swap_speed or (hlc.dispense_swap_speed if hlc is not None else 100)
     settling_time = settling_time or (hlc.dispense_settling_time if hlc is not None else 5)
-    mix_speed = mix_speed or (hlc.dispense_mix_flow_rate if hlc is not None else 100)
     type_of_dispensing_mode = type_of_dispensing_mode or _get_dispense_mode(
       jet=jet, empty=empty, blow_out=blow_out
     )
@@ -1303,13 +1326,13 @@ class VantageBackend(HamiltonLiquidHandler):
       side_touch_off_distance=round(side_touch_off_distance * 10),
       swap_speed=round(swap_speed * 10),
       settling_time=round(settling_time * 10),
-      mix_volume=round(mix_volume * 10),
-      mix_cycles=mix_cycles,
+      mix_volume=round(dispense.mix.volume * 100) if dispense.mix is not None else 0,
+      mix_cycles=dispense.mix.repetitions if dispense.mix is not None else 0,
       mix_position_in_z_direction_from_liquid_surface=round(
         mix_position_in_z_direction_from_liquid_surface * 10
       ),
       surface_following_distance_during_mixing=round(surface_following_distance_during_mixing * 10),
-      mix_speed=round(mix_speed * 10),
+      mix_speed=round(dispense.mix.flow_rate * 10) if dispense.mix is not None else 10,
       limit_curve_index=limit_curve_index,
       tadm_channel_pattern=tadm_channel_pattern,
       tadm_algorithm_on_off=tadm_algorithm_on_off,
