@@ -8,6 +8,7 @@ import inspect
 import json
 import logging
 import threading
+import unittest.mock
 import warnings
 from typing import (
   Any,
@@ -147,9 +148,6 @@ class LiquidHandler(Resource, Machine):
     self.backend: LiquidHandlerBackend = backend  # fix type
 
     self.deck = deck
-    # register callbacks for sending resource assignment/unassignment to backend
-    self.deck.register_did_assign_resource_callback(self._send_assigned_resource_to_backend)
-    self.deck.register_did_unassign_resource_callback(self._send_unassigned_resource_to_backend)
 
     self.head: Dict[int, TipTracker] = {}
     self.head96: Dict[int, TipTracker] = {}
@@ -179,10 +177,6 @@ class LiquidHandler(Resource, Machine):
 
     self.head = {c: TipTracker(thing=f"Channel {c}") for c in range(self.backend.num_channels)}
     self.head96 = {c: TipTracker(thing=f"Channel {c}") for c in range(96)}
-
-    self._send_assigned_resource_to_backend(self.deck)
-    for resource in self.deck.children:
-      self._send_assigned_resource_to_backend(resource)
 
     self._resource_pickup = None
 
@@ -238,16 +232,6 @@ class LiquidHandler(Resource, Machine):
     t = threading.Thread(target=callback, args=args, kwargs=kwargs)
     t.start()
     t.join()
-
-  def _send_assigned_resource_to_backend(self, resource: Resource):
-    """This method is called when a resource is assigned to the deck, and passes this information
-    to the backend."""
-    self._run_async_in_thread(self.backend.assigned_resource_callback, resource)
-
-  def _send_unassigned_resource_to_backend(self, resource: Resource):
-    """This method is called when a resource is unassigned from the deck, and passes this
-    information to the backend."""
-    self._run_async_in_thread(self.backend.unassigned_resource_callback, resource.name)
 
   def summary(self):
     """Prints a string summary of the deck layout."""
@@ -306,6 +290,10 @@ class LiquidHandler(Resource, Machine):
     Returns:
       The set of arguments that need to be removed from `backend_kwargs` before passing to `method`.
     """
+
+    # if method is an AsyncMock, skip the checks
+    if isinstance(method, unittest.mock.AsyncMock):
+      return set()
 
     default_args = default.union({"self"})
 
@@ -660,6 +648,7 @@ class LiquidHandler(Resource, Machine):
     self,
     use_channels: Optional[list[int]] = None,
     allow_nonzero_volume: bool = False,
+    offsets: Optional[List[Coordinate]] = None,
     **backend_kwargs,
   ):
     """Return all tips that are currently picked up to their original place.
@@ -706,6 +695,7 @@ class LiquidHandler(Resource, Machine):
       tip_spots=tip_spots,
       use_channels=channels,
       allow_nonzero_volume=allow_nonzero_volume,
+      offsets=offsets,
       **backend_kwargs,
     )
 
@@ -1380,6 +1370,62 @@ class LiquidHandler(Resource, Machine):
     finally:
       self._default_use_channels = None
 
+  @contextlib.asynccontextmanager
+  async def use_tips(
+    self,
+    tip_spots: List[TipSpot],
+    channels: Optional[List[int]] = None,
+    discard: bool = True,
+  ):
+    """Temporarily pick up tips from the specified tip spots on the specified channels.
+
+    This is a convenience method that picks up tips from `tip_spots` on `channels` when entering
+    the context, and discards them when exiting the context. When passing `discard=False`, the tips
+    will be returned instead of discarded.
+
+    Examples:
+      Use tips from A1 to H1 on channels 0 to 7, then discard:
+
+      >>> with lh.use_tips(tip_rack["A1":"H1"], channels=list(range(8))):
+      ...   await lh.aspirate(plate["A1":"H1"], vols=[50]*8)
+      ...   await lh.dispense(plate["A1":"H1"], vols=[50]*8)
+
+      This is equivalent to:
+
+      >>> await lh.pick_up_tips(tip_rack["A1":"H1"], use_channels=list(range(8)))
+      >>> await lh.aspirate(plate["A1":"H1"], vols=[50]*8, use_channels=list(range(8)))
+      >>> await lh.dispense(plate["A1":"H1"], vols=[50]*8, use_channels=list(range(8)))
+      >>> await lh.discard_tips(use_channels=list(range(8)))
+
+      Use tips from A1 to H1 on channels 0 to 7, but return them instead of discarding:
+
+      >>> with lh.use_tips(tip_rack["A1":"H1"], channels=list(range(8)), discard=False):
+      ...   await lh.aspirate(plate["A1":"H1"], vols=[50]*8)
+      ...   await lh.dispense(plate["A1":"H1"], vols=[50]*8)
+
+      This is equivalent to:
+
+      >>> await lh.pick_up_tips(tip_rack["A1":"H1"], use_channels=list(range(8)))
+      >>> await lh.aspirate(plate["A1":"H1"], vols=[50]*8, use_channels=list(range(8)))
+      >>> await lh.dispense(plate["A1":"H1"], vols=[50]*8, use_channels=list(range(8)))
+      >>> await lh.return_tips(use_channels=list(range(8)))
+    """
+
+    if channels is None:
+      channels = list(range(len(tip_spots)))
+
+    if len(tip_spots) != len(channels):
+      raise ValueError("Number of tip spots and channels must match.")
+
+    await self.pick_up_tips(tip_spots, use_channels=channels)
+    try:
+      yield
+    finally:
+      if discard:
+        await self.discard_tips(use_channels=channels)
+      else:
+        await self.return_tips(use_channels=channels)
+
   async def pick_up_tips96(
     self,
     tip_rack: TipRack,
@@ -1503,7 +1549,7 @@ class LiquidHandler(Resource, Machine):
       if not self.head96[i].has_tip:
         continue
       tip = self.head96[i].get_tip()
-      if tip.tracker.get_used_volume() > 0 and not allow_nonzero_volume:
+      if tip.tracker.get_used_volume() > 0 and not allow_nonzero_volume and does_volume_tracking():
         error = f"Cannot drop tip with volume {tip.tracker.get_used_volume()} on channel {i}"
         raise RuntimeError(error)
       if isinstance(resource, TipRack):
@@ -1900,7 +1946,10 @@ class LiquidHandler(Resource, Machine):
 
         # even if the volume tracker is disabled, a liquid (None, volume) is added to the list
         # during the aspiration command
-        liquids = tip.tracker.remove_liquid(volume=volume)
+        if tip.tracker.is_disabled or not does_volume_tracking():
+          liquids = [(None, volume)]
+        else:
+          liquids = tip.tracker.remove_liquid(volume=volume)
         reversed_liquids = list(reversed(liquids))
         all_liquids.append(reversed_liquids)
 
@@ -2133,7 +2182,7 @@ class LiquidHandler(Resource, Machine):
           f"got {resource_rotation_wrt_destination} degrees"
         )
 
-      to_location = destination.get_absolute_location() + destination.get_new_child_location(
+      to_location = destination.get_location_wrt(self.deck) + destination.get_new_child_location(
         resource.rotated(z=resource_rotation_wrt_destination_wrt_local)
       ).rotated(destination.get_absolute_rotation())
     elif isinstance(destination, Coordinate):
@@ -2144,7 +2193,7 @@ class LiquidHandler(Resource, Machine):
       child_wrt_parent = destination.get_default_child_location(
         resource.rotated(z=resource_rotation_wrt_destination_wrt_local)
       ).rotated(destination.get_absolute_rotation())
-      to_location = destination.get_absolute_location() + child_wrt_parent
+      to_location = destination.get_location_wrt(self.deck) + child_wrt_parent
     elif isinstance(destination, PlateAdapter):
       if not isinstance(resource, Plate):
         raise ValueError("Only plates can be moved to a PlateAdapter")
@@ -2152,16 +2201,16 @@ class LiquidHandler(Resource, Machine):
       adjusted_plate_anchor = destination.compute_plate_location(
         resource.rotated(z=resource_rotation_wrt_destination_wrt_local)
       ).rotated(destination.get_absolute_rotation())
-      to_location = destination.get_absolute_location() + adjusted_plate_anchor
+      to_location = destination.get_location_wrt(self.deck) + adjusted_plate_anchor
     elif isinstance(destination, Plate) and isinstance(resource, Lid):
       lid = resource
-      plate_location = destination.get_absolute_location()
+      plate_location = destination.get_location_wrt(self.deck)
       child_wrt_parent = destination.get_lid_location(
         lid.rotated(z=resource_rotation_wrt_destination_wrt_local)
       ).rotated(destination.get_absolute_rotation())
       to_location = plate_location + child_wrt_parent
     else:
-      to_location = destination.get_absolute_location()
+      to_location = destination.get_location_wrt(self.deck)
 
     drop = ResourceDrop(
       resource=self._resource_pickup.resource,
@@ -2172,7 +2221,7 @@ class LiquidHandler(Resource, Machine):
       offset=offset,
       pickup_distance_from_top=self._resource_pickup.pickup_distance_from_top,
       pickup_direction=self._resource_pickup.direction,
-      drop_direction=direction,
+      direction=direction,
       rotation=rotation_applied_by_move,
     )
     result = await self.backend.drop_resource(drop=drop, **backend_kwargs)
@@ -2531,7 +2580,7 @@ class LiquidHandler(Resource, Machine):
       )
 
     presence_flags = [True] * len(tip_spots)
-    z_height = tip_spots[0].get_absolute_location(z="top").z + 5
+    z_height = tip_spots[0].get_location_wrt(self.deck, z="top").z + 5
 
     # Step 1: Cluster tip spots by x-coordinate
     clusters_by_x: Dict[float, List[Tuple[TipSpot, int, int]]] = {}
