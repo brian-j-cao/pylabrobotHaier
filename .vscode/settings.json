@@ -20,5 +20,6 @@
     "editor.wordWrap": "bounded",
     "editor.wordWrapColumn": 100
   },
-  "mypy.runUsingActiveInterpreter": true
+  "mypy.runUsingActiveInterpreter": true,
+  "idf.pythonInstallPath": "C:\\Users\\BrianCao\\.espressif\\tools\\idf-python\\3.8.7\\python.exe"
 }
